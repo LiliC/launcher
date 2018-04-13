@@ -31,6 +31,7 @@ type options struct {
 	WCHostname       string `long:"wc.hostname" description:"Weave Cloud hostname" default:"cloud.weave.works"`
 	Token            string `long:"token" description:"Weave Cloud token" required:"true"`
 	GKE              bool   `long:"gke" description:"Create clusterrolebinding for GKE instances"`
+	Insecure         bool   `long:"insecure" description:"The server's certificate will not be checked for validity. This will make your HTTPS connections insecure"`
 }
 
 func init() {
@@ -55,6 +56,10 @@ func mainImpl() {
 		"weave_cloud_launcher": opts.LauncherHostname,
 		"weave_cloud_hostname": opts.WCHostname,
 	})
+
+	if opts.Insecure {
+		otherArgs = append(otherArgs, "--insecure-skip-tls-verify")
+	}
 
 	kubectlClient := kubectl.LocalClient{
 		GlobalArgs: otherArgs,
@@ -226,6 +231,9 @@ func askForConfirmation(s string) (bool, error) {
 func checkK8sVersion(kubectlClient kubectl.Client) {
 	fmt.Println("Checking kubectl & kubernetes versions")
 	clientVersion, serverVersion, err := kubectl.GetVersionInfo(kubectlClient)
+	if strings.Contains(err.Error(), "certificate signed by unknown authority") {
+		exitWithCapture("%v\nThere is problem with your CA certificates. Try again by running with --insecure flag:\n curl -Ls https://get.dev.weave.works | sh -s -- --token=1234 --insecure")
+	}
 	if clientVersion != "" {
 		raven.SetTagsContext(map[string]string{
 			"kubectl_clientVersion_gitVersion": clientVersion,
