@@ -43,4 +43,14 @@ curl -Ls "{{.Scheme}}://{{.LauncherHostname}}/bootstrap?dist=$dist" >> "$TMPFILE
 chmod +x "$TMPFILE"
 
 # Execute the bootstrap binary
-"$TMPFILE" "--scheme={{.Scheme}}" "--wc.launcher={{.LauncherHostname}}" "--wc.hostname={{.WCHostname}}" "$@"
+if output=$("$TMPFILE" "--scheme={{.Scheme}}" "--wc.launcher={{.LauncherHostname}}" "--wc.hostname={{.WCHostname}}" "$@"); then
+	# Not sure if we want send a "all was good" msg to the UI?
+	echo "Install completed"
+else
+  # Send error to UI
+  curl -s  -H "Accept: application/json" -H "Authorization: Bearer $token" -X POST -d \
+      '{"type": "onboarding_started", "messages": {"browser": { "type": "onboarding_started", "text": "Installation '"$output"'"}}}' \
+      https://frontend.dev.weave.works/api/notification/external/events || true
+	echo "Installation did not finish. $output"
+fi
+

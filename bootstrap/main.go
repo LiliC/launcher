@@ -234,6 +234,7 @@ func checkK8sVersion(kubectlClient kubectl.Client) {
 			"kubectl_clientVersion_gitVersion": clientVersion,
 		})
 		if serverVersion == "" {
+			_ = sendError("Some problems occured, please check cluster status.")
 			exitWithCapture("%v\nError checking your kubernetes server version.\nPlease check that you can connect to your cluster by running \"kubectl version\".\n", err)
 		} else {
 			raven.SetTagsContext(map[string]string{
@@ -241,11 +242,13 @@ func checkK8sVersion(kubectlClient kubectl.Client) {
 			})
 		}
 	} else {
+		_ = sendError("Some problems occured, please check cluster status.")
 		exitWithCapture("%v\nError checking kubernetes version info.\nPlease check your environment for problems by running \"kubectl version\".\n", err)
 	}
 
 	// Validate cluster version of at least 1.6.0
 	if !supportedK8sVersion(serverVersion) {
+		_ = sendError(fmt.Sprintf("Cluster Kubernetes version %s not supported, cluster must be 1.6.0 or newer.", serverVersion))
 		exitWithCapture("Kubernetes version %s not supported. We require Kubernetes cluster to be version 1.6.0 or newer.\n", serverVersion)
 	}
 }
@@ -263,4 +266,13 @@ func supportedK8sVersion(clusterVersion string) bool {
 	}
 
 	return true
+}
+
+// sendError sends the error msg to UI.
+func sendError(msg, eventType string) error {
+	eventTypeFailed := "onboarding_failed"
+
+	// curl -s >/dev/null 2>/dev/null -H "Accept: application/json" -H "Authorization: Bearer $token" -X POST -d \
+	// '{"type": "onboarding_failed", "messages": {"browser": { "type": "onboarding_started", "text": "Installation of Weave Cloud agents finished successfully."}}}' \
+	// #{{.Scheme}}://{{.WCHostname}}/api/notification/external/events || true
 }
