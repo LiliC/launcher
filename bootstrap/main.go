@@ -49,6 +49,7 @@ func main() {
 func mainImpl() {
 	opts := options{}
 	// Parse arguments with go-flags so we can forward unknown arguments to kubectl
+	os.Exit(0)
 	parser := flags.NewParser(&opts, flags.IgnoreUnknown)
 	otherArgs, err := parser.Parse()
 	if err != nil {
@@ -61,6 +62,7 @@ func mainImpl() {
 		"weave_cloud_hostname": opts.WCHostname,
 	})
 
+	sendError("test test", opts)
 	// Due to some users Kubernetes clusters having invalid, e.g. self-signed,
 	// certificates, we default to skipping the certificate validation.
 	otherArgs = append(otherArgs, "--insecure-skip-tls-verify")
@@ -310,20 +312,16 @@ func sendError(errMsg string, opts options) error {
 		},
 	}
 
-	b := new(bytes.Buffer)
-	json.NewEncoder(b).Encode(response)
+	jr, err := json.Marshal(response)
+	fmt.Println(response)
+	if err != nil {
+		return err
+	}
 
-	// #{{.Scheme}}://{{.WCHostname}}/api/notification/external/events
 	url := fmt.Sprintf("%s://%s/api/notification/external/events", opts.Scheme, opts.WCHostname)
-	fmt.Println("URL:>", url)
-
-	// TODO: remove me!
-	testURL := "http://localhost:5001"
-
-	req, err := http.NewRequest("POST", testURL, bytes.NewBuffer(b))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jr))
 	req.Header.Set("Content-Type", "application/json")
-	// TODO: uncomment!!
-	//req.Header.Add("Authorization:", fmt.Sprintf("Bearer:  %s", opts.Token))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", opts.Token))
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -332,10 +330,9 @@ func sendError(errMsg string, opts options) error {
 	}
 	defer resp.Body.Close()
 
-	fmt.Println("response Status:", resp.Status)
-	fmt.Println("response Headers:", resp.Header)
+	// TODO: Handle?
 	body, _ := ioutil.ReadAll(resp.Body)
-	fmt.Println("response Body:", string(body))
+	fmt.Println(body)
 
 	return nil
 }
