@@ -71,6 +71,7 @@ func mainImpl() {
 	}
 
 	if !kubectlClient.IsPresent() {
+		sendError("test", opts)
 		exitWithCapture("Could not find kubectl in PATH, please install it: https://kubernetes.io/docs/tasks/tools/install-kubectl/\n")
 	}
 
@@ -94,7 +95,11 @@ func mainImpl() {
 	fmt.Println("Preparing for Weave Cloud setup")
 
 	// Capture the kubernetes version info to help debug issues
-	checkK8sVersion(kubectlClient) // NB exits on error
+	err = checkK8sVersion(kubectlClient)
+	if err != nil {
+		sendError("test", opts)
+		exitWithCapture("%v", err)
+	}
 
 	InstanceID, InstanceName, err := weavecloud.LookupInstanceByToken(wcOrgLookupURL, opts.Token)
 	if err != nil {
@@ -246,43 +251,49 @@ func askForConfirmation(s string) (bool, error) {
 	}
 }
 
-func checkK8sVersion(kubectlClient kubectl.Client) {
+func checkK8sVersion(kubectlClient kubectl.Client) error {
 	fmt.Println("Checking kubectl & kubernetes versions")
 	clientVersion, serverVersion, err := kubectl.GetVersionInfo(kubectlClient)
-	if clientVersion != "" {
+	if clientVersion == "" {
 		raven.SetTagsContext(map[string]string{
 			"kubectl_clientVersion_gitVersion": clientVersion,
 		})
 		if serverVersion == "" {
-			exitWithCapture("%v\nError checking your kubernetes server version.\nPlease check that you can connect to your cluster by running \"kubectl version\".\n", err)
+			return fmt.Errorf("%v\nError checking your Kubernetes server version.\nPlease check that you can connect to your cluster by running \"kubectl version\".\n", err)
 		} else {
 			raven.SetTagsContext(map[string]string{
 				"kubectl_serverVersion_gitVersion": serverVersion,
 			})
 		}
 	} else {
-		exitWithCapture("%v\nError checking kubernetes version info.\nPlease check your environment for problems by running \"kubectl version\".\n", err)
+		return fmt.Errorf("%v\nError checking your Kubernetes server version.\nPlease check that you can connect to your cluster by running \"kubectl version\".\n", err)
 	}
 
 	// Validate cluster version of at least 1.6.0
-	if !supportedK8sVersion(serverVersion) {
-		exitWithCapture("Kubernetes version %s not supported. We require Kubernetes cluster to be version 1.6.0 or newer.\n", serverVersion)
+	supported, err := supportedK8sVersion(serverVersion)
+	if err != nil {
+		return fmt.Errorf("%v\nError checking your Kubernetes server version.\n", err)
 	}
+	if !supported {
+		return fmt.Errorf("we require Kubernetes cluster to be version 1.6.0 or newer")
+	}
+
+	return nil
 }
 
-func supportedK8sVersion(clusterVersion string) bool {
+func supportedK8sVersion(clusterVersion string) (bool, error) {
 	versionStr := strings.TrimLeft(clusterVersion, "v")
 	version, err := semver.Parse(versionStr)
 	if err != nil {
-		exitWithCapture("Failed to validate Kubernetes cluster version: %v\n", err)
+		return false, err
 	}
 
 	// We only support clusters 1.6.0 and higher.
 	if version.Major == 1 && version.Minor < 6 {
-		return false
+		return false, nil
 	}
 
-	return true
+	return true, nil
 }
 
 type errorResponse struct {
