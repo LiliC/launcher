@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"syscall"
@@ -48,6 +51,7 @@ func mainImpl() {
 	parser := flags.NewParser(&opts, flags.IgnoreUnknown)
 	otherArgs, err := parser.Parse()
 	if err != nil {
+		sendError(err, opts)
 		exitWithCapture("%s\n", err)
 	}
 	raven.SetTagsContext(map[string]string{
@@ -234,7 +238,6 @@ func checkK8sVersion(kubectlClient kubectl.Client) {
 			"kubectl_clientVersion_gitVersion": clientVersion,
 		})
 		if serverVersion == "" {
-			_ = sendError("Some problems occured, please check cluster status.")
 			exitWithCapture("%v\nError checking your kubernetes server version.\nPlease check that you can connect to your cluster by running \"kubectl version\".\n", err)
 		} else {
 			raven.SetTagsContext(map[string]string{
@@ -242,13 +245,11 @@ func checkK8sVersion(kubectlClient kubectl.Client) {
 			})
 		}
 	} else {
-		_ = sendError("Some problems occured, please check cluster status.")
 		exitWithCapture("%v\nError checking kubernetes version info.\nPlease check your environment for problems by running \"kubectl version\".\n", err)
 	}
 
 	// Validate cluster version of at least 1.6.0
 	if !supportedK8sVersion(serverVersion) {
-		_ = sendError(fmt.Sprintf("Cluster Kubernetes version %s not supported, cluster must be 1.6.0 or newer.", serverVersion))
 		exitWithCapture("Kubernetes version %s not supported. We require Kubernetes cluster to be version 1.6.0 or newer.\n", serverVersion)
 	}
 }
@@ -269,10 +270,33 @@ func supportedK8sVersion(clusterVersion string) bool {
 }
 
 // sendError sends the error msg to UI.
-func sendError(msg, eventType string) error {
-	eventTypeFailed := "onboarding_failed"
+func sendError(errMsg error, opts options) error {
+	// eventTypeFailed := "onboarding_failed"
 
-	// curl -s >/dev/null 2>/dev/null -H "Accept: application/json" -H "Authorization: Bearer $token" -X POST -d \
-	// '{"type": "onboarding_failed", "messages": {"browser": { "type": "onboarding_started", "text": "Installation of Weave Cloud agents finished successfully."}}}' \
-	// #{{.Scheme}}://{{.WCHostname}}/api/notification/external/events || true
+	// #{{.Scheme}}://{{.WCHostname}}/api/notification/external/events
+	url := fmt.Sprintf("%s://%s/api/notification/external/events", opts.Scheme, opts.WCHostname)
+	fmt.Println("URL:>", url)
+
+	// TODO: remove me!
+	testURL := "http://localhost:5001"
+
+	var jsonStr = []byte(`{"type": "onboarding_failed", "messages": {"browser": { "type": "onboarding_failed", "text": "."}}}`)
+
+	req, err := http.NewRequest("POST", testURL, bytes.NewBuffer(jsonStr))
+	req.Header.Set("Content-Type", "application/json")
+	//req.Header.Add("Authorization:", "Bearer"+" "+opts.Token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	fmt.Println("response Status:", resp.Status)
+	fmt.Println("response Headers:", resp.Header)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Println("response Body:", string(body))
+
+	return nil
 }
