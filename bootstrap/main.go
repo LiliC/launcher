@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -51,7 +52,7 @@ func mainImpl() {
 	parser := flags.NewParser(&opts, flags.IgnoreUnknown)
 	otherArgs, err := parser.Parse()
 	if err != nil {
-		sendError(err, opts)
+		sendError("test", opts)
 		exitWithCapture("%s\n", err)
 	}
 	raven.SetTagsContext(map[string]string{
@@ -73,15 +74,18 @@ func mainImpl() {
 
 	agentK8sURL, err := text.ResolveString(agentK8sURLTemplate, opts)
 	if err != nil {
+		sendError("test", opts)
 		log.Fatal("invalid URL template:", err)
 	}
 	wcOrgLookupURL, err := text.ResolveString(weavecloud.DefaultWCOrgLookupURLTemplate, opts)
 	if err != nil {
+		sendError("test", opts)
 		log.Fatal("invalid URL template:", err)
 	}
 
 	// Restore stdin, making fd 0 point at the terminal
 	if err := syscall.Dup2(1, 0); err != nil {
+		sendError("test", opts)
 		exitWithCapture("Could not restore stdin\n", err)
 	}
 
@@ -92,6 +96,7 @@ func mainImpl() {
 
 	InstanceID, InstanceName, err := weavecloud.LookupInstanceByToken(wcOrgLookupURL, opts.Token)
 	if err != nil {
+		sendError("test", opts)
 		exitWithCapture("Error looking up Weave Cloud instance: %s\n", err)
 	}
 	raven.SetTagsContext(map[string]string{"instance": InstanceID})
@@ -105,6 +110,7 @@ func mainImpl() {
 	// server proxy with kubectl proxy.
 	cluster, err := kubectl.GetClusterInfo(kubectlClient)
 	if err == nil {
+		sendError("test", opts)
 		fmt.Printf("Installing Weave Cloud agents on %s at %s\n", cluster.Name, cluster.ServerAddress)
 	}
 
@@ -116,6 +122,7 @@ func mainImpl() {
 			})
 			fmt.Fprintln(os.Stderr, "WARNING: For GKE installations, a cluster-admin clusterrolebinding is required.")
 			fmt.Fprintf(os.Stderr, "Could not create clusterrolebinding: %s\n", err)
+			sendError("test", opts)
 		}
 	}
 
@@ -123,6 +130,7 @@ func mainImpl() {
 	fmt.Println("Performing a check of the Kubernetes installation setup.")
 	ok, err := kubectl.TestDNS(kubectlClient, "cloud.weave.works")
 	if err != nil {
+		sendError("test", opts)
 		exitWithCapture("There was an error while performing DNS check: %s\n", err)
 	}
 
@@ -134,11 +142,13 @@ func mainImpl() {
 
 	secretCreated, err := kubectl.CreateSecretFromLiteral(kubectlClient, "weave", "weave-cloud", "token", opts.Token, opts.AssumeYes)
 	if err != nil {
+		sendError("test", opts)
 		exitWithCapture("There was an error creating the secret: %s\n", err)
 	}
 	if !secretCreated {
 		currentToken, err := kubectl.GetSecretValue(kubectlClient, "weave", "weave-cloud", "token")
 		if err != nil {
+			sendError("test", opts)
 			exitWithCapture("There was an error checking the current secret: %s\n", err)
 		}
 		if currentToken != opts.Token {
@@ -152,12 +162,15 @@ func mainImpl() {
 			confirmed, err := askForConfirmation(fmt.Sprintf(
 				"\n%s\nWould you like to continue and connect this cluster to %q (id: %s) instead?", msg, InstanceName, InstanceID))
 			if err != nil {
+				sendError("test", opts)
 				exitWithCapture("Could not ask for confirmation: %s\n", err)
 			} else if !confirmed {
+				sendError("test", opts)
 				exitWithCapture("Installation cancelled")
 			}
 			_, err = kubectl.CreateSecretFromLiteral(kubectlClient, "weave", "weave-cloud", "token", opts.Token, true)
 			if err != nil {
+				sendError("test", opts)
 				exitWithCapture("There was an error creating the secret: %s\n", err)
 			}
 		}
@@ -172,6 +185,7 @@ func mainImpl() {
 		// can leave some objects behind when encountering an error. Clean things up.
 		fmt.Println("Rolling back cluster changes")
 		kubectl.Execute(kubectlClient, "delete", "--ignore-not-found=true", "-f", agentK8sURL)
+		sendError("test", opts)
 		os.Exit(1)
 	}
 
@@ -269,9 +283,35 @@ func supportedK8sVersion(clusterVersion string) bool {
 	return true
 }
 
+type errorResponse struct {
+	Type     string   `json:"type"`
+	Messages messages `json:"messages"`
+}
+
+type messages struct {
+	Browser browser `json:"browser"`
+}
+
+type browser struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 // sendError sends the error msg to UI.
-func sendError(errMsg error, opts options) error {
-	// eventTypeFailed := "onboarding_failed"
+func sendError(errMsg string, opts options) error {
+	eventTypeFailed := "onboarding_failed"
+	response := errorResponse{
+		Type: eventTypeFailed,
+		Messages: messages{
+			Browser: browser{
+				Type: eventTypeFailed,
+				Text: errMsg,
+			},
+		},
+	}
+
+	b := new(bytes.Buffer)
+	json.NewEncoder(b).Encode(response)
 
 	// #{{.Scheme}}://{{.WCHostname}}/api/notification/external/events
 	url := fmt.Sprintf("%s://%s/api/notification/external/events", opts.Scheme, opts.WCHostname)
@@ -280,11 +320,10 @@ func sendError(errMsg error, opts options) error {
 	// TODO: remove me!
 	testURL := "http://localhost:5001"
 
-	var jsonStr = []byte(`{"type": "onboarding_failed", "messages": {"browser": { "type": "onboarding_failed", "text": "."}}}`)
-
-	req, err := http.NewRequest("POST", testURL, bytes.NewBuffer(jsonStr))
+	req, err := http.NewRequest("POST", testURL, bytes.NewBuffer(b))
 	req.Header.Set("Content-Type", "application/json")
-	//req.Header.Add("Authorization:", "Bearer"+" "+opts.Token)
+	// TODO: uncomment!!
+	//req.Header.Add("Authorization:", fmt.Sprintf("Bearer:  %s", opts.Token))
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
