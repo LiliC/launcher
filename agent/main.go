@@ -50,6 +50,11 @@ type agentConfig struct {
 	KubeClient           *kubeclient.Clientset
 	KubectlClient        kubectl.Client
 	FluxConfig           *FluxConfig
+
+	CMInformer cache.SharedIndexInformer
+	// If we need to get the configmap we can user the lister
+	// CMListers  listers.ConfigMapLister
+	CMSynced cache.InformerSynced
 }
 
 func init() {
@@ -200,6 +205,8 @@ func mainImpl() {
 		WCHostname:           *wcHostname,
 		AgentPollURLTemplate: *agentPollURLTemplate,
 		WCPollURLTemplate:    *wcPollURLTemplate,
+		// AWS credentials
+		Aws: *aws,
 	}
 	raven.SetTagsContext(map[string]string{
 		"weave_cloud_hostname": *wcHostname,
@@ -261,9 +268,14 @@ func mainImpl() {
 		ln.Close()
 	})
 
+	// Start cache
+	cacheConfigMaps(cfg)
+
 	// Poll for new manifests every wcPollInterval.
 	if *featureInstall {
 		cancel := make(chan interface{})
+
+		go cfg.CMInformer.Run(cancel)
 
 		g.Add(
 			func() error {
@@ -348,4 +360,28 @@ func mainImpl() {
 		logError("Agent error", err, cfg)
 		os.Exit(1)
 	}
+}
+
+// Watch for CM creations.
+func cacheConfigMaps(cfg *agentConfig) {
+	source := cache.NewListWatchFromClient(
+		cfg.KubeClient.Core().RESTClient(),
+		"configmaps",
+		"weave", // TODO: decide on ns?
+		fields.Everything())
+
+	cfg.schedsInformer = cache.NewSharedIndexInformer(
+		source,
+		&v1.ConfigMap{},
+		1*time.Minute,
+		cache.Indexers{},
+	)
+
+	cfg.schedsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    cfg.handleCMAdd,
+		UpdateFunc: cfg.handleCMUpdate,
+		DeleteFunc: cfg.handleCMDelete,
+	})
+
+	cfg.CMSynced = cfg.CMInformer.HasSynced
 }
