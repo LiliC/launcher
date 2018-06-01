@@ -367,7 +367,7 @@ func cacheConfigMaps(cfg *agentConfig) {
 	source := cache.NewListWatchFromClient(
 		cfg.KubeClient.Core().RESTClient(),
 		"configmaps",
-		"weave", // TODO: decide on ns?
+		"weave",
 		fields.Everything())
 
 	cfg.schedsInformer = cache.NewSharedIndexInformer(
@@ -384,4 +384,19 @@ func cacheConfigMaps(cfg *agentConfig) {
 	})
 
 	cfg.CMSynced = cfg.CMInformer.HasSynced
+}
+
+// triggered on all ConfigMap creation in weave ns
+func (cfg *agentConfig) handleCMAdd(obj interface{}) {
+	log.Info("ConfigMap was added")
+}
+
+// triggered on all ConfigMap update in weave ns
+func (cfg *agentConfig) handleCMUpdate(old, cur interface{}) {
+	log.Info("ConfigMap was updated")
+}
+
+// triggered on all ConfigMap deletion in weave ns
+func (cfg *agentConfig) handleCMDelete(obj interface{}) {
+	log.Info("ConfigMap was deleted")
 }
