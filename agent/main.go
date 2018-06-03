@@ -17,7 +17,9 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	kubeclient "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/weaveworks/launcher/pkg/k8s"
 	"github.com/weaveworks/launcher/pkg/kubectl"
@@ -205,8 +207,6 @@ func mainImpl() {
 		WCHostname:           *wcHostname,
 		AgentPollURLTemplate: *agentPollURLTemplate,
 		WCPollURLTemplate:    *wcPollURLTemplate,
-		// AWS credentials
-		Aws: *aws,
 	}
 	raven.SetTagsContext(map[string]string{
 		"weave_cloud_hostname": *wcHostname,
@@ -274,8 +274,10 @@ func mainImpl() {
 	// Poll for new manifests every wcPollInterval.
 	if *featureInstall {
 		cancel := make(chan interface{})
+		// TODO: do something else here
+		stopCh := make(chan struct{})
 
-		go cfg.CMInformer.Run(cancel)
+		go cfg.CMInformer.Run(stopCh)
 
 		g.Add(
 			func() error {
@@ -370,14 +372,14 @@ func cacheConfigMaps(cfg *agentConfig) {
 		"weave",
 		fields.Everything())
 
-	cfg.schedsInformer = cache.NewSharedIndexInformer(
+	cfg.CMInformer = cache.NewSharedIndexInformer(
 		source,
-		&v1.ConfigMap{},
+		&apiv1.ConfigMap{},
 		1*time.Minute,
 		cache.Indexers{},
 	)
 
-	cfg.schedsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	cfg.CMInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    cfg.handleCMAdd,
 		UpdateFunc: cfg.handleCMUpdate,
 		DeleteFunc: cfg.handleCMDelete,
