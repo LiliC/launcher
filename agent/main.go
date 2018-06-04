@@ -56,7 +56,11 @@ type agentConfig struct {
 	CMInformer cache.SharedIndexInformer
 	// If we need to get the configmap we can user the lister
 	// CMListers  listers.ConfigMapLister
-	CMSynced cache.InformerSynced
+	CMSynced       cache.InformerSynced
+	SecretInformer cache.SharedIndexInformer
+	// If we need to get the configmap we can user the lister
+	// CMListers  listers.ConfigMapLister
+	SecretSynced cache.InformerSynced
 }
 
 func init() {
@@ -268,16 +272,20 @@ func mainImpl() {
 		ln.Close()
 	})
 
-	// Start cache
+	// Start CM watching
 	cacheConfigMaps(cfg)
+	// Start Secret watching
+	cacheSecrets(cfg)
+
+	// TODO: do something else here
+	stopCh := make(chan struct{})
+
+	go cfg.CMInformer.Run(stopCh)
+	go cfg.SecretInformer.Run(stopCh)
 
 	// Poll for new manifests every wcPollInterval.
 	if *featureInstall {
 		cancel := make(chan interface{})
-		// TODO: do something else here
-		stopCh := make(chan struct{})
-
-		go cfg.CMInformer.Run(stopCh)
 
 		g.Add(
 			func() error {
@@ -362,6 +370,8 @@ func mainImpl() {
 		logError("Agent error", err, cfg)
 		os.Exit(1)
 	}
+
+	<-stopCh
 }
 
 // Watch for CM creations.
@@ -370,7 +380,7 @@ func cacheConfigMaps(cfg *agentConfig) {
 		cfg.KubeClient.Core().RESTClient(),
 		"configmaps",
 		"weave",
-		fields.Everything())
+		fields.SelectorFromSet(fields.Set{"metadata.name": "cloudwatch"}))
 
 	cfg.CMInformer = cache.NewSharedIndexInformer(
 		source,
@@ -388,17 +398,118 @@ func cacheConfigMaps(cfg *agentConfig) {
 	cfg.CMSynced = cfg.CMInformer.HasSynced
 }
 
-// triggered on all ConfigMap creation in weave ns
+// triggered on all ConfigMap creation with name cloudwatch in weave ns
 func (cfg *agentConfig) handleCMAdd(obj interface{}) {
-	log.Info("ConfigMap was added")
+	cm, ok := obj.(*apiv1.ConfigMap)
+	if !ok {
+		log.Error("Failed to type assert ConfigMap")
+		return
+	}
+
+	// ConfigMap with name cloudwatch was created,
+	// we should check for the secret name that is found in the configmap and the region
+	// and curl the url for the manifest file and apply it.
+	/*err := deployCloudWatch(cfg)
+	if err != nil {
+		log.Error(err)
+		return
+	}*/
+
+	log.Infof("data: %v", cm.Data)
+	log.Infof("cloudwatch.yaml: %v", cm.Data["cloudwatch.yaml"])
+	log.Infof("region %v", cm.Data["cloudwatch.yaml"]["region"])
+
+	for name, content := range cm.Data {
+		log.Info(name)
+		log.Info(content)
+
+		cw, err := parseCloudwatchYaml(content)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		fmt.Println(cw)
+	}
 }
 
-// triggered on all ConfigMap update in weave ns
+// Cloudwatch struct
+type Cloudwatch struct {
+	Region     string
+	SecretName string
+}
+
+func parseCloudwatchYaml(cm string) (*Cloudwatch, error) {
+	cw := Cloudwatch{}
+	if err := yaml.NewYAMLOrJSONDecoder(bytes.NewBufferString(cm), 1000).Decode(&cw); err != nil {
+		return nil, err
+	}
+	return &cw, nil
+}
+
+// triggered on all ConfigMap update with name cloudwatch in weave ns
 func (cfg *agentConfig) handleCMUpdate(old, cur interface{}) {
 	log.Info("ConfigMap was updated")
+	log.Infof("old: %v cur: %v", old, cur)
 }
 
-// triggered on all ConfigMap deletion in weave ns
+// triggered on only ConfigMap deletion with name cloudwatch in weave ns
 func (cfg *agentConfig) handleCMDelete(obj interface{}) {
 	log.Info("ConfigMap was deleted")
+	// TODO: Handle ConfigMap deletion. Delete indivual objets that were created as at this point.
+	log.Infof("obj: %v", obj)
+}
+
+func deployCloudWatch(cfg *agentConfig) error {
+	// Get params from configmap
+	// region
+	// secretName
+
+	// Get manifest file to apply
+	// https://frontend.dev.weave.works/k8s/v1.7/cloudwatch.yaml?aws-region=us-east-1&aws-secret=cloudwatch
+	err := kubectl.Apply(cfg.KubectlClient, "https://frontend.dev.weave.works/k8s/v1.7/cloudwatch.yaml?aws-region=us-east-1&aws-secret=cloudwatch")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Watch for Secret creation/update/deletion.
+func cacheSecrets(cfg *agentConfig) {
+	source := cache.NewListWatchFromClient(
+		cfg.KubeClient.Core().RESTClient(),
+		"secrets",
+		"weave",
+		fields.Everything())
+
+	cfg.SecretInformer = cache.NewSharedIndexInformer(
+		source,
+		&apiv1.Secret{},
+		1*time.Minute,
+		cache.Indexers{},
+	)
+
+	cfg.SecretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    cfg.handleSecretAdd,
+		UpdateFunc: cfg.handleSecretUpdate,
+		DeleteFunc: cfg.handleSecretDelete,
+	})
+
+	cfg.SecretSynced = cfg.SecretInformer.HasSynced
+}
+
+// triggered on all Secret creation in weave ns
+func (cfg *agentConfig) handleSecretAdd(obj interface{}) {
+	log.Info("Secret was added")
+}
+
+// triggered on all Secret update in weave ns
+func (cfg *agentConfig) handleSecretUpdate(old, cur interface{}) {
+	log.Info("Secret was updated")
+}
+
+// triggered on all Secret deletion in weave ns
+func (cfg *agentConfig) handleSecretDelete(obj interface{}) {
+	// TODO: Handle Secret deletion. Delete indivual objets that were created as at this point.
+	log.Info("Secret was deleted")
 }
