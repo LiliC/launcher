@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,7 +18,9 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/util/yaml"
 	kubeclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
@@ -409,19 +412,21 @@ func (cfg *agentConfig) handleCMAdd(obj interface{}) {
 	// ConfigMap with name cloudwatch was created,
 	// we should check for the secret name that is found in the configmap and the region
 	// and curl the url for the manifest file and apply it.
-	/*err := deployCloudWatch(cfg)
-	if err != nil {
-		log.Error(err)
-		return
-	}*/
+	cfg.conform(cm)
+}
 
+// conform
+func (cfg *agentConfig) conform(cm *apiv1.ConfigMap) {
 	log.Infof("data: %v", cm.Data)
 	log.Infof("cloudwatch.yaml: %v", cm.Data["cloudwatch.yaml"])
-	log.Infof("region %v", cm.Data["cloudwatch.yaml"]["region"])
 
 	for name, content := range cm.Data {
-		log.Info(name)
-		log.Info(content)
+		if name != "cloudwatch.yaml" {
+			return
+		}
+
+		log.Info("name %v", name)
+		log.Info("content %v", content)
 
 		cw, err := parseCloudwatchYaml(content)
 		if err != nil {
@@ -429,7 +434,50 @@ func (cfg *agentConfig) handleCMAdd(obj interface{}) {
 			return
 		}
 		fmt.Println(cw)
+		// Make sure secret exists before applying cloudwatch manifest file
+		if !cfg.secretExists(cw.SecretName) {
+			log.Errorf("Secret %s specified in the cloudwatch ConfigMap does not exist", cw.SecretName)
+			return
+		}
+
+		err = deployCloudWatch(cfg, cw)
+		if err != nil {
+			log.Error(err)
+			return
+		}
 	}
+}
+
+func (cfg *agentConfig) secretExists(secretName string) bool {
+	_, err := cfg.KubeClient.CoreV1().Secrets("weave").Get(secretName, metav1.GetOptions{})
+	if err != nil {
+		return false
+	}
+
+	return true
+}
+
+// triggered on all ConfigMap update with name cloudwatch in weave ns
+func (cfg *agentConfig) handleCMUpdate(old, cur interface{}) {
+	log.Info("ConfigMap was updated")
+	log.Infof("old: %v cur: %v", old, cur)
+	cm, ok := cur.(*apiv1.ConfigMap)
+	if !ok {
+		log.Error("Failed to type assert ConfigMap")
+		return
+	}
+
+	// ConfigMap with name cloudwatch was created,
+	// we should check for the secret name that is found in the configmap and the region
+	// and curl the url for the manifest file and apply it.
+	cfg.conform(cm)
+}
+
+// triggered on only ConfigMap deletion with name cloudwatch in weave ns
+func (cfg *agentConfig) handleCMDelete(obj interface{}) {
+	log.Info("ConfigMap was deleted")
+	// TODO: Handle ConfigMap deletion. Delete indivual objets that were created as at this point.
+	log.Infof("obj: %v", obj)
 }
 
 // Cloudwatch struct
@@ -446,27 +494,10 @@ func parseCloudwatchYaml(cm string) (*Cloudwatch, error) {
 	return &cw, nil
 }
 
-// triggered on all ConfigMap update with name cloudwatch in weave ns
-func (cfg *agentConfig) handleCMUpdate(old, cur interface{}) {
-	log.Info("ConfigMap was updated")
-	log.Infof("old: %v cur: %v", old, cur)
-}
-
-// triggered on only ConfigMap deletion with name cloudwatch in weave ns
-func (cfg *agentConfig) handleCMDelete(obj interface{}) {
-	log.Info("ConfigMap was deleted")
-	// TODO: Handle ConfigMap deletion. Delete indivual objets that were created as at this point.
-	log.Infof("obj: %v", obj)
-}
-
-func deployCloudWatch(cfg *agentConfig) error {
-	// Get params from configmap
-	// region
-	// secretName
-
+func deployCloudWatch(cfg *agentConfig, cw *Cloudwatch) error {
 	// Get manifest file to apply
 	// https://frontend.dev.weave.works/k8s/v1.7/cloudwatch.yaml?aws-region=us-east-1&aws-secret=cloudwatch
-	err := kubectl.Apply(cfg.KubectlClient, "https://frontend.dev.weave.works/k8s/v1.7/cloudwatch.yaml?aws-region=us-east-1&aws-secret=cloudwatch")
+	err := kubectl.Apply(cfg.KubectlClient, fmt.Sprintf("https://frontend.dev.weave.works/k8s/v1.7/cloudwatch.yaml?aws-region=%s&aws-secret=%s", cw.Region, cw.SecretName))
 	if err != nil {
 		return err
 	}
